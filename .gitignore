@@ -1,0 +1,8 @@
+# Credenciales - NUNCA subir
+secrets.yaml
+
+# Basura de ESPHome (builds, caché)
+.esphome/
+
+# macOS
+.DS_Store

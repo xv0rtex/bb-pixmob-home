@@ -1,0 +1,186 @@
+# ============================================================
+# PixMob ESP32 - Control pulsera Bad Bunny via IR
+# Hardware: ESP32 DevKitC (CP2102) + KY-005 en GPIO4
+# Cableado KY-005:  S -> P4   |   - -> GND   |   centro: nada
+#
+# Al conectar al WiFi anuncia el ultimo octeto de la IP
+# parpadeando la pulsera: VERDE=centenas ROJO=decenas AZUL=unidades
+# (digito 0 = ese color no parpadea)
+# ============================================================
+substitutions:
+  device_name: pixmob
+  ir_pin: GPIO4
+
+esphome:
+  name: ${device_name}
+  friendly_name: PixMob Pulsera
+  includes:
+    - pixmob_codes.h
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+    - ssid: !secret wifi_ssid_2
+      password: !secret wifi_password_2
+  ap:
+    ssid: "PixMob Fallback"
+    password: "pixmob1234"
+  on_connect:
+    - script.execute: announce_ip
+
+web_server:
+  port: 80
+  version: 3
+
+remote_transmitter:
+  pin: ${ir_pin}
+  carrier_duty_percent: 50%
+
+globals:
+  - id: selected_effect
+    type: int
+    initial_value: '0'
+  - id: ip_d1
+    type: int
+    initial_value: '0'
+  - id: ip_d2
+    type: int
+    initial_value: '0'
+  - id: ip_d3
+    type: int
+    initial_value: '0'
+
+script:
+  - id: tx_selected
+    then:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code: !lambda 'return PIXMOB_CODES[id(selected_effect)];'
+          repeat:
+            times: 3
+            wait_time: 7000us
+
+  # Transmite un efecto concreto por indice (0=Rojo, 3=Verde, 6=Azul)
+  - id: tx_idx
+    parameters:
+      idx: int
+    then:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code: !lambda 'return PIXMOB_CODES[idx];'
+          repeat:
+            times: 3
+            wait_time: 7000us
+
+  - id: announce_ip
+    mode: restart
+    then:
+      - delay: 4s  # margen para que la pulsera este delante tras el boot
+      - lambda: |-
+          std::string ip;
+          for (auto &addr : wifi::global_wifi_component->get_ip_addresses()) {
+            if (addr.is_set() && addr.is_ip4()) { ip = addr.str(); break; }
+          }
+          int last = atoi(ip.substr(ip.rfind('.') + 1).c_str());
+          id(ip_d1) = last / 100;
+          id(ip_d2) = (last / 10) % 10;
+          id(ip_d3) = last % 10;
+          ESP_LOGI("pixmob", "Anunciando IP .%d -> V:%d R:%d A:%d",
+                   last, id(ip_d1), id(ip_d2), id(ip_d3));
+      # Centenas en VERDE (indice 3)
+      - repeat:
+          count: !lambda 'return id(ip_d1);'
+          then:
+            - script.execute:
+                id: tx_idx
+                idx: 3
+            - delay: 1100ms
+      - delay: 2s
+      # Decenas en ROJO (indice 0)
+      - repeat:
+          count: !lambda 'return id(ip_d2);'
+          then:
+            - script.execute:
+                id: tx_idx
+                idx: 0
+            - delay: 1100ms
+      - delay: 2s
+      # Unidades en AZUL (indice 6)
+      - repeat:
+          count: !lambda 'return id(ip_d3);'
+          then:
+            - script.execute:
+                id: tx_idx
+                idx: 6
+            - delay: 1100ms
+
+select:
+  - platform: template
+    name: "Color"
+    id: color_select
+    optimistic: true
+    options:
+      - "Rojo"
+      - "Naranja"
+      - "Amarillo"
+      - "Verde"
+      - "Turquesa"
+      - "Azul claro"
+      - "Azul"
+      - "Magenta"
+      - "Rosa"
+      - "Blanco"
+      - "Blanco fade rapido"
+      - "Blanco fade lento"
+      - "Amarillo fade lento"
+      - "Naranja fade lento"
+      - "Turquesa fade lento"
+      - "Verde fade lento"
+      - "Rosa fade"
+      - "Magenta fade"
+      - "Morado fade"
+    initial_option: "Rojo"
+    on_value:
+      then:
+        - lambda: 'id(selected_effect) = i;'
+        - script.execute: tx_selected
+
+button:
+  - platform: template
+    name: "Flash (enviar una vez)"
+    on_press:
+      - script.execute: tx_selected
+  - platform: template
+    name: "Anunciar IP"
+    icon: mdi:ip-network
+    on_press:
+      - script.execute: announce_ip
+
+switch:
+  - platform: template
+    name: "Mantener color"
+    id: hold_color
+    optimistic: true
+    icon: mdi:led-on
+
+interval:
+  - interval: 900ms
+    then:
+      - if:
+          condition:
+            switch.is_on: hold_color
+          then:
+            - script.execute: tx_selected
